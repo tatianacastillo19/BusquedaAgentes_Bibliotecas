@@ -1,0 +1,8 @@
+osmnx>=1.9.0
+networkx>=3.0
+geopy>=2.4.0
+customtkinter>=5.2.0
+matplotlib>=3.8.0
+pyinstaller>=6.0.0
+scipy>=1.11.0
+shapely>=2.0.0
