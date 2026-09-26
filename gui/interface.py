@@ -22,6 +22,8 @@ from matplotlib.collections import LineCollection
 
 from config.bibliotecas import BIBLIOTECAS
 from core.map_loader import load_bogota_graph, get_nearest_node, get_edge_cost, BogotaRoadMap
+from core.route_cache import cache_route_result, get_cached_route
+from core.route_history import RouteHistory
 from agents.bfs_agent import bfs_search
 from agents.ucs_agent import ucs_search
 from agents.greedy_agent import greedy_search
@@ -299,6 +301,7 @@ class BibloRedApp(ctk.CTk):
         self.library_names = list(BIBLIOTECAS.keys())
         self.last_results: List[Dict[str, Any]] = []
         self.table_row_widgets: List[ctk.CTkBaseClass] = []
+        self.route_history = RouteHistory()
 
         # Configuración del Grid principal
         self.grid_columnconfigure(1, weight=1)
@@ -399,6 +402,17 @@ class BibloRedApp(ctk.CTk):
             command=self._on_search_clicked
         )
         self.btn_search.pack(padx=20, pady=(6, 6), fill="x")
+
+        self.btn_history = ctk.CTkButton(
+            self.sidebar_frame,
+            text="Historial de Rutas 📜",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            height=34,
+            fg_color="#315b78",
+            hover_color="#3e7194",
+            command=self._open_history_window
+        )
+        self.btn_history.pack(padx=20, pady=(0, 6), fill="x")
 
         # Barra de progreso y estado
         self.progress_bar = ctk.CTkProgressBar(self.sidebar_frame, mode="indeterminate", width=300)
@@ -759,21 +773,35 @@ class BibloRedApp(ctk.CTk):
 
                 results = []
                 for name, eval_type, func, color, uses_real in selected_algos:
-                    tree_trace: List[Dict[str, Any]] = []
-                    path, cost, nodes_eval, elapsed = func(
-                        road_map, orig_node, dest_node, tree_trace=tree_trace
-                    )
-                    results.append({
-                        "name": name,
-                        "eval_type": eval_type,
-                        "path": path,
-                        "cost": cost,
-                        "nodes_eval": nodes_eval,
-                        "time_s": elapsed,
-                        "tree_trace": tree_trace,
-                        "color": color,
-                        "uses_real": uses_real
+                    result = get_cached_route(orig_node, dest_node, name)
+                    if result is not None:
+                        result["time_s"] = 0.0
+                        result["cache_hit"] = True
+                    else:
+                        tree_trace: List[Dict[str, Any]] = []
+                        path, cost, nodes_eval, elapsed = func(
+                            road_map, orig_node, dest_node, tree_trace=tree_trace
+                        )
+                        result = {
+                            "name": name,
+                            "eval_type": eval_type,
+                            "path": path,
+                            "cost": cost,
+                            "nodes_eval": nodes_eval,
+                            "time_s": elapsed,
+                            "tree_trace": tree_trace,
+                            "color": color,
+                            "uses_real": uses_real,
+                            "cache_hit": False,
+                        }
+                        cache_route_result(orig_node, dest_node, name, result)
+                    result.update({
+                        "origin_node": orig_node,
+                        "destination_node": dest_node,
+                        "origin_name": origen_name,
+                        "destination_name": destino_name,
                     })
+                    results.append(result)
 
                 self.after(0, lambda res=results, o=origen_name, d=destino_name: self._on_search_finished(res, o, d))
 
@@ -791,6 +819,166 @@ class BibloRedApp(ctk.CTk):
         self.btn_search.configure(state="normal")
         self.lbl_status.configure(text="❌ Error durante la búsqueda.", text_color="#ef476f")
         messagebox.showerror("Error de búsqueda", message)
+
+    def _open_history_window(self):
+        """Muestra y administra los recorridos persistidos localmente."""
+        window = ctk.CTkToplevel(self)
+        window.title("Historial de Rutas")
+        window.geometry("920x640")
+        window.minsize(680, 440)
+        window.transient(self)
+
+        ctk.CTkLabel(
+            window,
+            text="Historial de Rutas",
+            font=ctk.CTkFont(size=18, weight="bold"),
+            text_color="#58a6ff"
+        ).pack(fill="x", padx=18, pady=(16, 8), anchor="w")
+
+        controls = ctk.CTkFrame(window, fg_color="transparent")
+        controls.pack(fill="x", padx=14, pady=(0, 8))
+        filter_var = tk.StringVar(value="Todos")
+        records_frame = ctk.CTkScrollableFrame(window, corner_radius=6)
+        records_frame.pack(fill="both", expand=True, padx=14, pady=(0, 12))
+
+        def render_records():
+            for child in records_frame.winfo_children():
+                child.destroy()
+            selected_type = filter_var.get()
+            records = self.route_history.list_records()
+            if selected_type != "Todos":
+                records = [record for record in records if record.get("tipo") == selected_type]
+            if not records:
+                ctk.CTkLabel(
+                    records_frame,
+                    text="No hay recorridos para mostrar.",
+                    text_color="#aeb8c1"
+                ).pack(padx=12, pady=20)
+                return
+            for record in records:
+                card = ctk.CTkFrame(records_frame, fg_color="#18232c", corner_radius=5)
+                card.pack(fill="x", padx=4, pady=4)
+                distance_km = float(record.get("distancia_km", 0.0) or 0.0)
+                evaluated_nodes = int(record.get("nodos_evaluados", 0) or 0)
+                summary = (
+                    f"{record.get('origen', 'Origen')}  →  {record.get('destino', 'Destino')}\n"
+                    f"{record.get('algoritmo', 'Algoritmo')} · {record.get('fecha_hora', '')} · "
+                    f"{distance_km:.2f} km · {evaluated_nodes:,} evaluados · {record.get('tipo', '')}"
+                )
+                ctk.CTkLabel(
+                    card,
+                    text=summary,
+                    justify="left",
+                    anchor="w",
+                    text_color="#e8edf2"
+                ).pack(side="left", fill="x", expand=True, padx=10, pady=9)
+                actions = ctk.CTkFrame(card, fg_color="transparent")
+                actions.pack(side="right", padx=6, pady=5)
+                ctk.CTkButton(
+                    actions,
+                    text="Cargar en Mapa",
+                    width=118,
+                    height=28,
+                    command=lambda saved=record: self._load_history_route(saved)
+                ).pack(side="left", padx=3)
+                ctk.CTkButton(
+                    actions,
+                    text="Eliminar Registro",
+                    width=126,
+                    height=28,
+                    fg_color="#8c3540",
+                    hover_color="#a6424d",
+                    command=lambda saved_id=str(record.get("id", "")): delete_record(saved_id)
+                ).pack(side="left", padx=3)
+
+        def delete_record(record_id: str):
+            try:
+                self.route_history.delete_record(record_id)
+            except OSError as error:
+                messagebox.showerror("Error de historial", str(error), parent=window)
+                return
+            render_records()
+
+        def clear_history():
+            if not messagebox.askyesno("Limpiar historial", "¿Eliminar todos los recorridos guardados?", parent=window):
+                return
+            try:
+                self.route_history.clear()
+            except OSError as error:
+                messagebox.showerror("Error de historial", str(error), parent=window)
+                return
+            render_records()
+
+        filter_box = ctk.CTkComboBox(
+            controls,
+            values=["Todos", "Realizado", "Propuesto"],
+            variable=filter_var,
+            width=180,
+            command=lambda _value: render_records()
+        )
+        filter_box.pack(side="left", padx=4)
+        ctk.CTkButton(
+            controls,
+            text="Limpiar Historial",
+            fg_color="#8c3540",
+            hover_color="#a6424d",
+            command=clear_history
+        ).pack(side="right", padx=4)
+        render_records()
+        window.grab_set()
+
+    def _load_history_route(self, record: Dict[str, Any]) -> None:
+        """Dibuja una ruta guardada directamente sin volver a ejecutar el algoritmo."""
+        road_map = self.road_map
+        path = record.get("camino")
+        origin_name = record.get("origen")
+        destination_name = record.get("destino")
+        if road_map is None:
+            messagebox.showwarning("Mapa no disponible", "Espera a que termine de cargar la red vial.")
+            return
+        if (
+            not isinstance(path, list)
+            or not path
+            or not isinstance(origin_name, str)
+            or not isinstance(destination_name, str)
+            or origin_name not in BIBLIOTECAS
+            or destination_name not in BIBLIOTECAS
+        ):
+            messagebox.showerror("Registro no válido", "El recorrido guardado no contiene datos suficientes para dibujarse.")
+            return
+        if any(node not in road_map.coords for node in path):
+            messagebox.showerror("Registro incompatible", "Los nodos guardados no existen en el mapa cargado.")
+            return
+
+        self.combo_origen.set(origin_name)
+        self.combo_destino.set(destination_name)
+        route_result = {
+            "name": str(record.get("algoritmo", "Recorrido guardado")),
+            "path": path,
+            "cost": float(record.get("distancia_km", 0.0) or 0.0) * 1000.0,
+            "color": "#06d6a0",
+        }
+        self._plot_calculated_routes([route_result], origin_name, destination_name)
+        self.lbl_status.configure(text="Ruta cargada desde el historial; no se recalculó.", text_color="#06d6a0")
+
+    def _save_route_record(self, result: Dict[str, Any], record_type: str) -> None:
+        """Guarda una ruta actual como realizada o propuesta."""
+        try:
+            self.route_history.add_record(
+                origin_name=result["origin_name"],
+                destination_name=result["destination_name"],
+                origin_node=result["origin_node"],
+                destination_node=result["destination_node"],
+                algorithm=result["name"],
+                distance_km=result["cost"] / 1000.0,
+                nodes_evaluated=result["nodes_eval"],
+                path=result["path"],
+                record_type=record_type,
+            )
+        except (OSError, TypeError, ValueError) as error:
+            messagebox.showerror("Error de historial", f"No se pudo guardar el recorrido:\n{error}")
+            return
+        self.lbl_status.configure(text=f"Recorrido guardado como {record_type.lower()}.", text_color="#06d6a0")
 
     def _show_route_window(self, result: Dict[str, Any]):
         """Muestra en una ventana nativa los nodos y costos acumulados de una ruta."""
@@ -862,12 +1050,20 @@ class BibloRedApp(ctk.CTk):
                 text_color="#c0c8d0"
             ).pack(side="right", padx=10, pady=8)
 
+        actions = ctk.CTkFrame(window, fg_color="transparent")
+        actions.pack(fill="x", padx=16, pady=(0, 16))
         ctk.CTkButton(
-            window,
+            actions,
+            text="Guardar Recorrido",
+            width=160,
+            command=lambda: self._save_route_record(result, "Propuesto")
+        ).pack(side="right", padx=(6, 0))
+        ctk.CTkButton(
+            actions,
             text="Cerrar",
             width=120,
             command=window.destroy
-        ).pack(padx=16, pady=(0, 16), anchor="e")
+        ).pack(side="right", padx=6)
         window.grab_set()
 
     def _show_search_tree_window(self, result: Dict[str, Any]):
@@ -1034,6 +1230,22 @@ class BibloRedApp(ctk.CTk):
 
         # Identificar algoritmo con MENOR DISTANCIA RECORRIDA
         valid_results = [r for r in results if r["path"]]
+        if valid_results:
+            try:
+                for result in valid_results:
+                    self.route_history.add_record(
+                        origin_name=result["origin_name"],
+                        destination_name=result["destination_name"],
+                        origin_node=result["origin_node"],
+                        destination_node=result["destination_node"],
+                        algorithm=result["name"],
+                        distance_km=result["cost"] / 1000.0,
+                        nodes_evaluated=result["nodes_eval"],
+                        path=result["path"],
+                        record_type="Realizado",
+                    )
+            except (OSError, TypeError, ValueError) as error:
+                messagebox.showerror("Error de historial", f"No se pudo actualizar el historial:\n{error}")
 
         if valid_results:
             best_route = min(valid_results, key=lambda x: x["cost"])

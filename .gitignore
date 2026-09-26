@@ -5,6 +5,7 @@ env/
 ENV/
 
 # Archivos de mapa en caché y datos locales
+historial_rutas.json
 *.graphml
 *.gpkg
 *.geojson
