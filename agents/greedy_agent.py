@@ -8,17 +8,20 @@ import time
 from typing import Any, Dict, List, Set, Tuple
 from core.heuristics import haversine_distance, fast_haversine
 from core.map_loader import BogotaRoadMap, get_edge_cost
+from core.search_tree import SearchTreeTrace, record_tree_state, start_tree_trace
 
 
 def greedy_search(
     road_map: Any,
     origen_node: Any,
-    destino_node: Any
+    destino_node: Any,
+    tree_trace: SearchTreeTrace = None
 ) -> Tuple[List[Any], float, int, float]:
     """
     Ejecuta el algoritmo de Búsqueda Voraz (Greedy Best-First).
     """
     start_time = time.perf_counter()
+    root_trace_id = start_tree_trace(tree_trace, origen_node)
 
     if origen_node == destino_node:
         elapsed_time = time.perf_counter() - start_time
@@ -38,7 +41,7 @@ def greedy_search(
         initial_h = haversine_distance(origen_node, destino_node, road_map)
 
     frontier = []
-    heapq.heappush(frontier, (initial_h, next(counter), origen_node))
+    heapq.heappush(frontier, (initial_h, next(counter), origen_node, 0.0, root_trace_id))
 
     visited: Set[Any] = set()
     parent_map: Dict[Any, Any] = {}
@@ -46,7 +49,7 @@ def greedy_search(
     found = False
 
     while frontier:
-        _, _, current = heapq.heappop(frontier)
+        _, _, current, current_g, current_trace_id = heapq.heappop(frontier)
 
         if current in visited:
             continue
@@ -59,20 +62,33 @@ def greedy_search(
             break
 
         if is_custom:
-            for neighbor, _ in adj.get(current, []):
+            for neighbor, edge_weight in adj.get(current, []):
                 if neighbor not in visited:
                     if neighbor not in parent_map:
                         parent_map[neighbor] = current
                     n_lat, n_lon = coords[neighbor]
                     h_val = fast_haversine(n_lat, n_lon, dest_lat, dest_lon)
-                    heapq.heappush(frontier, (h_val, next(counter), neighbor))
+                    next_g = current_g + edge_weight if tree_trace is not None and current_trace_id is not None else current_g
+                    child_trace_id = None
+                    if tree_trace is not None and current_trace_id is not None:
+                        child_trace_id = record_tree_state(tree_trace, neighbor, current_trace_id, next_g)
+                    heapq.heappush(frontier, (h_val, next(counter), neighbor, next_g, child_trace_id))
         else:
             for neighbor in road_map.successors(current):
                 if neighbor not in visited:
                     if neighbor not in parent_map:
                         parent_map[neighbor] = current
                     h_val = haversine_distance(neighbor, destino_node, road_map)
-                    heapq.heappush(frontier, (h_val, next(counter), neighbor))
+                    edge_weight = (
+                        get_edge_cost(road_map, current, neighbor)
+                        if tree_trace is not None and current_trace_id is not None
+                        else 0.0
+                    )
+                    next_g = current_g + edge_weight
+                    child_trace_id = None
+                    if tree_trace is not None and current_trace_id is not None:
+                        child_trace_id = record_tree_state(tree_trace, neighbor, current_trace_id, next_g)
+                    heapq.heappush(frontier, (h_val, next(counter), neighbor, next_g, child_trace_id))
 
     elapsed_time = time.perf_counter() - start_time
 

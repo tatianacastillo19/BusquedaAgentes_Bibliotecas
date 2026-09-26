@@ -16,11 +16,12 @@ import customtkinter as ctk
 import matplotlib
 matplotlib.use("TkAgg")
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.backends._backend_tk import NavigationToolbar2Tk
 from matplotlib.figure import Figure
 from matplotlib.collections import LineCollection
 
 from config.bibliotecas import BIBLIOTECAS
-from core.map_loader import load_bogota_graph, get_nearest_node, BogotaRoadMap
+from core.map_loader import load_bogota_graph, get_nearest_node, get_edge_cost, BogotaRoadMap
 from agents.bfs_agent import bfs_search
 from agents.ucs_agent import ucs_search
 from agents.greedy_agent import greedy_search
@@ -297,6 +298,7 @@ class BibloRedApp(ctk.CTk):
         self.is_loading_graph = False
         self.library_names = list(BIBLIOTECAS.keys())
         self.last_results: List[Dict[str, Any]] = []
+        self.table_row_widgets: List[ctk.CTkBaseClass] = []
 
         # Configuración del Grid principal
         self.grid_columnconfigure(1, weight=1)
@@ -528,7 +530,7 @@ class BibloRedApp(ctk.CTk):
         self.winner_card = ctk.CTkFrame(
             self.metrics_container,
             fg_color="#0e2a22",
-            border_width=1.5,
+            border_width=int(1.5),
             border_color="#06d6a0",
             corner_radius=8
         )
@@ -559,8 +561,8 @@ class BibloRedApp(ctk.CTk):
 
     def _render_table_headers(self):
         """Dibuja los encabezados de columnas de la tabla comparativa."""
-        headers = ["Algoritmo / Modelo", "Tipo de Evaluación", "Distancia Recorrida (km)", "Nodos Evaluados", "Tiempo (ms)", "Resultado / Estado"]
-        col_weights = [3, 3, 2, 2, 2, 2]
+        headers = ["Algoritmo / Modelo", "Tipo de Evaluación", "Distancia Recorrida (km)", "Nodos Evaluados", "Ruta", "Arbol de Estados", "Resultado / Estado"]
+        col_weights = [3, 3, 2, 2, 1, 2, 2]
 
         for col_idx, (header, weight) in enumerate(zip(headers, col_weights)):
             self.table_frame.grid_columnconfigure(col_idx, weight=weight)
@@ -693,7 +695,8 @@ class BibloRedApp(ctk.CTk):
 
     def _on_search_clicked(self):
         """Valida entradas y ejecuta los algoritmos de búsqueda seleccionados en segundo plano."""
-        if self.road_map is None:
+        road_map = self.road_map
+        if road_map is None:
             messagebox.showwarning("Mapa no disponible", "La red vial aún no ha terminado de cargar.")
             return
 
@@ -722,17 +725,17 @@ class BibloRedApp(ctk.CTk):
         def search_thread_func():
             try:
                 # Nodos precomputados directos (O(1))
-                if origen_name in self.road_map.library_nodes:
-                    orig_node = self.road_map.library_nodes[origen_name]
+                if origen_name in road_map.library_nodes:
+                    orig_node = road_map.library_nodes[origen_name]
                 else:
                     orig_coords = (BIBLIOTECAS[origen_name]["lat"], BIBLIOTECAS[origen_name]["lon"])
-                    orig_node = get_nearest_node(self.road_map, orig_coords[0], orig_coords[1])
+                    orig_node = get_nearest_node(road_map, orig_coords[0], orig_coords[1])
 
-                if destino_name in self.road_map.library_nodes:
-                    dest_node = self.road_map.library_nodes[destino_name]
+                if destino_name in road_map.library_nodes:
+                    dest_node = road_map.library_nodes[destino_name]
                 else:
                     dest_coords = (BIBLIOTECAS[destino_name]["lat"], BIBLIOTECAS[destino_name]["lon"])
-                    dest_node = get_nearest_node(self.road_map, dest_coords[0], dest_coords[1])
+                    dest_node = get_nearest_node(road_map, dest_coords[0], dest_coords[1])
 
                 # Lista de algoritmos con descripción precisa de su método de cálculo
                 all_algos = [
@@ -756,7 +759,10 @@ class BibloRedApp(ctk.CTk):
 
                 results = []
                 for name, eval_type, func, color, uses_real in selected_algos:
-                    path, cost, nodes_eval, elapsed = func(self.road_map, orig_node, dest_node)
+                    tree_trace: List[Dict[str, Any]] = []
+                    path, cost, nodes_eval, elapsed = func(
+                        road_map, orig_node, dest_node, tree_trace=tree_trace
+                    )
                     results.append({
                         "name": name,
                         "eval_type": eval_type,
@@ -764,6 +770,7 @@ class BibloRedApp(ctk.CTk):
                         "cost": cost,
                         "nodes_eval": nodes_eval,
                         "time_s": elapsed,
+                        "tree_trace": tree_trace,
                         "color": color,
                         "uses_real": uses_real
                     })
@@ -777,6 +784,241 @@ class BibloRedApp(ctk.CTk):
         thread = threading.Thread(target=search_thread_func, daemon=True)
         thread.start()
 
+    def _on_search_error(self, message: str):
+        """Restablece los controles e informa de errores al ejecutar una búsqueda."""
+        self.progress_bar.stop()
+        self.progress_bar.pack_forget()
+        self.btn_search.configure(state="normal")
+        self.lbl_status.configure(text="❌ Error durante la búsqueda.", text_color="#ef476f")
+        messagebox.showerror("Error de búsqueda", message)
+
+    def _show_route_window(self, result: Dict[str, Any]):
+        """Muestra en una ventana nativa los nodos y costos acumulados de una ruta."""
+        path = result.get("path", [])
+        if not path:
+            messagebox.showinfo("Ruta no disponible", "Este algoritmo no encontró una ruta para mostrar.")
+            return
+
+        window = ctk.CTkToplevel(self)
+        window.title(f"Ruta de {result['name']}")
+        window.transient(self)
+        window.resizable(True, True)
+
+        width, height = 620, 560
+        window.update_idletasks()
+        x = self.winfo_rootx() + max((self.winfo_width() - width) // 2, 0)
+        y = self.winfo_rooty() + max((self.winfo_height() - height) // 2, 0)
+        window.geometry(f"{width}x{height}+{x}+{y}")
+
+        ctk.CTkLabel(
+            window,
+            text=f"Ruta completa · {len(path):,} nodos",
+            font=ctk.CTkFont(size=18, weight="bold"),
+            text_color="#06d6a0"
+        ).pack(padx=20, pady=(18, 4), anchor="w")
+        ctk.CTkLabel(
+            window,
+            text=result["name"],
+            font=ctk.CTkFont(size=12),
+            text_color="#aeb8c1"
+        ).pack(padx=20, pady=(0, 12), anchor="w")
+
+        route_list = ctk.CTkScrollableFrame(window, corner_radius=6)
+        route_list.pack(fill="both", expand=True, padx=16, pady=(0, 12))
+        accumulated_cost = 0.0
+
+        for step_index, node in enumerate(path):
+            if step_index > 0 and self.road_map is not None:
+                accumulated_cost += get_edge_cost(self.road_map, path[step_index - 1], node)
+
+            if step_index == 0:
+                step_label = "Paso 1 · Origen"
+            elif step_index == len(path) - 1:
+                step_label = f"Paso {step_index + 1} · Destino"
+            else:
+                step_label = f"Paso {step_index + 1}"
+
+            row = ctk.CTkFrame(route_list, fg_color="#18232c", corner_radius=5)
+            row.pack(fill="x", padx=4, pady=3)
+            ctk.CTkLabel(
+                row,
+                text=step_label,
+                width=150,
+                anchor="w",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                text_color="#58a6ff"
+            ).pack(side="left", padx=(10, 6), pady=8)
+            ctk.CTkLabel(
+                row,
+                text=f"Intersección {node}",
+                anchor="w",
+                font=ctk.CTkFont(size=11)
+            ).pack(side="left", fill="x", expand=True, padx=6, pady=8)
+            ctk.CTkLabel(
+                row,
+                text=f"Acumulado: {accumulated_cost:,.1f} m",
+                anchor="e",
+                font=ctk.CTkFont(size=11),
+                text_color="#c0c8d0"
+            ).pack(side="right", padx=10, pady=8)
+
+        ctk.CTkButton(
+            window,
+            text="Cerrar",
+            width=120,
+            command=window.destroy
+        ).pack(padx=16, pady=(0, 16), anchor="e")
+        window.grab_set()
+
+    def _show_search_tree_window(self, result: Dict[str, Any]):
+        """Dibuja hasta 200 estados del árbol de búsqueda con Matplotlib."""
+        path = result.get("path", [])
+        trace = result.get("tree_trace", [])
+        if not path:
+            messagebox.showinfo("Árbol no disponible", "No hay una ruta encontrada para graficar.")
+            return
+
+        max_nodes = 200
+        displayed_path = path if len(path) <= max_nodes else path[:max_nodes - 1] + path[-1:]
+        tree_nodes: List[Dict[str, Any]] = []
+        path_child_ids: Dict[Tuple[int, str], int] = {}
+        path_accumulated = 0.0
+
+        for index, node in enumerate(displayed_path):
+            if index > 0 and self.road_map is not None:
+                prev_index = index - 1
+                if len(path) > max_nodes and index == max_nodes - 1:
+                    for edge_index in range(prev_index, len(path) - 1):
+                        path_accumulated += get_edge_cost(
+                            self.road_map, path[edge_index], path[edge_index + 1]
+                        )
+                else:
+                    path_accumulated += get_edge_cost(self.road_map, path[prev_index], node)
+            state_id = len(tree_nodes)
+            parent_id = state_id - 1 if state_id else None
+            tree_nodes.append({
+                "id": state_id,
+                "parent": parent_id,
+                "node": str(node),
+                "g": path_accumulated,
+                "solution": True,
+            })
+            if parent_id is not None:
+                path_child_ids[(parent_id, str(node))] = state_id
+
+        trace_to_display: Dict[int, int] = {}
+        if trace:
+            trace_to_display[trace[0]["id"]] = 0
+            for state in trace[1:]:
+                parent_display_id = trace_to_display.get(state["parent"])
+                if parent_display_id is None:
+                    continue
+                route_child = path_child_ids.get((parent_display_id, state["node"]))
+                if route_child is not None:
+                    trace_to_display[state["id"]] = route_child
+                    continue
+                if len(tree_nodes) >= max_nodes:
+                    continue
+                displayed_id = len(tree_nodes)
+                tree_nodes.append({
+                    "id": displayed_id,
+                    "parent": parent_display_id,
+                    "node": state["node"],
+                    "g": state["g"],
+                    "solution": False,
+                })
+                trace_to_display[state["id"]] = displayed_id
+
+        children: Dict[int, List[int]] = {state["id"]: [] for state in tree_nodes}
+        for state in tree_nodes:
+            if state["parent"] is not None:
+                children[state["parent"]].append(state["id"])
+
+        positions: Dict[int, Tuple[float, float]] = {}
+        leaf_counter = [0]
+
+        def position_subtree(state_id: int, depth: int) -> float:
+            child_ids = children[state_id]
+            if not child_ids:
+                x_position = float(leaf_counter[0])
+                leaf_counter[0] += 1
+            else:
+                child_positions = [position_subtree(child_id, depth + 1) for child_id in child_ids]
+                x_position = sum(child_positions) / len(child_positions)
+            positions[state_id] = (x_position, float(-depth))
+            return x_position
+
+        position_subtree(0, 0)
+
+        window = ctk.CTkToplevel(self)
+        window.title(f"Árbol de Estados · {result['name']}")
+        window.geometry("1120x760")
+        window.minsize(760, 520)
+        window.transient(self)
+
+        ctk.CTkLabel(
+            window,
+            text=f"Árbol de búsqueda · {len(tree_nodes)} de máximo {max_nodes} nodos",
+            font=ctk.CTkFont(size=16, weight="bold"),
+            text_color="#58a6ff"
+        ).pack(fill="x", padx=12, pady=(10, 4))
+
+        figure = Figure(figsize=(11, 7), dpi=90, facecolor="#10161c")
+        axis = figure.add_subplot(111)
+        axis.set_facecolor("#10161c")
+        axis.axis("off")
+        axis.set_title(result["name"], color="#f0f6fc", fontsize=10, pad=12)
+
+        for state in tree_nodes:
+            parent_id = state["parent"]
+            if parent_id is None:
+                continue
+            parent_x, parent_y = positions[parent_id]
+            child_x, child_y = positions[state["id"]]
+            edge_color = "#24c78b" if state["solution"] else "#677786"
+            axis.plot([parent_x, child_x], [parent_y, child_y], color=edge_color, linewidth=1.1, zorder=1)
+
+        for state in tree_nodes:
+            x_position, y_position = positions[state["id"]]
+            if state["id"] == 0:
+                node_color = "#f0c84b"
+            elif state["id"] == len(displayed_path) - 1:
+                node_color = "#ef5b64"
+            elif state["solution"]:
+                node_color = "#24c78b"
+            else:
+                node_color = "#9bb5c9"
+            axis.scatter([x_position], [y_position], s=115, color=node_color, edgecolors="#e8edf2", linewidths=0.7, zorder=2)
+            axis.annotate(
+                state["node"],
+                (x_position, y_position),
+                xytext=(0, 8),
+                textcoords="offset points",
+                ha="center",
+                va="bottom",
+                color="#f0f6fc",
+                fontsize=6,
+                zorder=3
+            )
+
+        axis.margins(x=0.06, y=0.12)
+        figure.tight_layout()
+        canvas = FigureCanvasTkAgg(figure, master=window)
+        canvas.draw()
+        toolbar = NavigationToolbar2Tk(canvas, window, pack_toolbar=False)
+        toolbar.update()
+        toolbar.pack(side="top", fill="x", padx=8)
+        canvas.get_tk_widget().pack(fill="both", expand=True, padx=8, pady=4)
+
+        ctk.CTkLabel(
+            window,
+            text="Origen · Amarillo     Destino · Rojo     Ruta final · Verde     Alternativas · Azul grisáceo",
+            font=ctk.CTkFont(size=11),
+            text_color="#c0c8d0"
+        ).pack(padx=10, pady=3)
+        ctk.CTkButton(window, text="Cerrar", width=110, command=window.destroy).pack(pady=(3, 12))
+        window.grab_set()
+
     def _on_search_finished(self, results: List[Dict[str, Any]], origen_name: str, destino_name: str):
         """Actualiza el cuadro de menor distancia, la tabla de resultados y dibuja las rutas."""
         self.progress_bar.stop()
@@ -786,10 +1028,9 @@ class BibloRedApp(ctk.CTk):
         self.last_results = results
 
         # Limpiar filas anteriores de la tabla
-        for widget in self.table_frame.winfo_children():
-            grid_info = widget.grid_info()
-            if grid_info and int(grid_info.get("row", 0)) > 0:
-                widget.destroy()
+        for widget in self.table_row_widgets:
+            widget.destroy()
+        self.table_row_widgets.clear()
 
         # Identificar algoritmo con MENOR DISTANCIA RECORRIDA
         valid_results = [r for r in results if r["path"]]
@@ -837,8 +1078,6 @@ class BibloRedApp(ctk.CTk):
             eval_type = res["eval_type"]
             cost_km = f"{res['cost'] / 1000.0:.2f} km" if res["cost"] != float("inf") else "Sin Ruta"
             nodes_cnt = f"{res['nodes_eval']:,}"
-            time_ms = f"{res['time_s'] * 1000.0:.2f} ms"
-
             # Badge / Resultado
             if not res["path"]:
                 badge_text = "❌ No hallado"
@@ -853,9 +1092,9 @@ class BibloRedApp(ctk.CTk):
                 badge_text = "✅ Ruta válida"
                 badge_color = "#58a6ff"
 
-            values = [name, eval_type, cost_km, nodes_cnt, time_ms, badge_text]
+            values = [name, eval_type, cost_km, nodes_cnt]
             for col_idx, val in enumerate(values):
-                color = badge_color if col_idx in (2, 5) else ("#ffffff" if col_idx == 0 else "#c0c8d0")
+                color = badge_color if col_idx == 2 else ("#ffffff" if col_idx == 0 else "#c0c8d0")
                 lbl = ctk.CTkLabel(
                     self.table_frame,
                     text=val,
@@ -863,12 +1102,54 @@ class BibloRedApp(ctk.CTk):
                     text_color=color
                 )
                 lbl.grid(row=row_idx, column=col_idx, padx=6, pady=3, sticky="w")
+                self.table_row_widgets.append(lbl)
+
+            route_button = ctk.CTkButton(
+                self.table_frame,
+                text="Ver Ruta 📍",
+                width=112,
+                height=27,
+                font=ctk.CTkFont(size=10, weight="bold"),
+                fg_color="#245b45",
+                hover_color="#2d7659",
+                state="normal" if res["path"] else "disabled",
+                command=lambda route_result=res: self._show_route_window(route_result)
+            )
+            route_button.grid(row=row_idx, column=4, padx=6, pady=3, sticky="w")
+            self.table_row_widgets.append(route_button)
+
+            tree_button = ctk.CTkButton(
+                self.table_frame,
+                text="Ver Grafico",
+                width=105,
+                height=27,
+                font=ctk.CTkFont(size=10, weight="bold"),
+                fg_color="#315b78",
+                hover_color="#3e7194",
+                state="normal" if res["path"] else "disabled",
+                command=lambda tree_result=res: self._show_search_tree_window(tree_result)
+            )
+            tree_button.grid(row=row_idx, column=5, padx=6, pady=3, sticky="w")
+            self.table_row_widgets.append(tree_button)
+
+            result_label = ctk.CTkLabel(
+                self.table_frame,
+                text=badge_text,
+                font=ctk.CTkFont(size=11),
+                text_color=badge_color
+            )
+            result_label.grid(row=row_idx, column=6, padx=6, pady=3, sticky="w")
+            self.table_row_widgets.append(result_label)
 
         # Dibujar trazado de rutas en Matplotlib
         self._plot_calculated_routes(results, origen_name, destino_name)
 
     def _plot_calculated_routes(self, results: List[Dict[str, Any]], origen_name: str, destino_name: str):
         """Grafica el camino vehicular encontrado sobre el mapa de calles de Matplotlib."""
+        road_map = self.road_map
+        if road_map is None:
+            return
+
         self.ax.clear()
         self.ax.set_facecolor("#0d1117")
         self.ax.grid(True, color="#1c2430", linestyle="--", linewidth=0.5)
@@ -894,8 +1175,8 @@ class BibloRedApp(ctk.CTk):
             if not path:
                 continue
 
-            path_lats = [float(self.road_map.coords[n][0]) for n in path]
-            path_lons = [float(self.road_map.coords[n][1]) for n in path]
+            path_lats = [float(road_map.coords[n][0]) for n in path]
+            path_lons = [float(road_map.coords[n][1]) for n in path]
 
             is_shortest = (res["cost"] == min_cost)
             line_width = 3.8 if is_shortest else 2.0

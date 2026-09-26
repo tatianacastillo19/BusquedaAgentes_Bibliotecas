@@ -8,17 +8,20 @@ import time
 from typing import Any, Dict, List, Tuple
 from core.heuristics import haversine_distance, fast_haversine
 from core.map_loader import BogotaRoadMap, get_edge_cost
+from core.search_tree import SearchTreeTrace, record_tree_state, start_tree_trace
 
 
 def astar_search(
     road_map: Any,
     origen_node: Any,
-    destino_node: Any
+    destino_node: Any,
+    tree_trace: SearchTreeTrace = None
 ) -> Tuple[List[Any], float, int, float]:
     """
     Ejecuta el algoritmo de Búsqueda A* en tiempo ultrarrápido.
     """
     start_time = time.perf_counter()
+    root_trace_id = start_tree_trace(tree_trace, origen_node)
 
     if origen_node == destino_node:
         elapsed_time = time.perf_counter() - start_time
@@ -39,7 +42,7 @@ def astar_search(
 
     # Frontier: (f_score, tie_breaker, current_node, g_score)
     frontier = []
-    heapq.heappush(frontier, (initial_h, next(counter), origen_node, 0.0))
+    heapq.heappush(frontier, (initial_h, next(counter), origen_node, 0.0, root_trace_id))
 
     g_score: Dict[Any, float] = {origen_node: 0.0}
     parent_map: Dict[Any, Any] = {}
@@ -47,7 +50,7 @@ def astar_search(
     found = False
 
     while frontier:
-        f_val, _, current, current_g = heapq.heappop(frontier)
+        f_val, _, current, current_g, current_trace_id = heapq.heappop(frontier)
         visited_nodes_count += 1
 
         if current == destino_node:
@@ -66,7 +69,10 @@ def astar_search(
                     n_lat, n_lon = coords[neighbor]
                     h_val = fast_haversine(n_lat, n_lon, dest_lat, dest_lon)
                     f_score = tentative_g + h_val
-                    heapq.heappush(frontier, (f_score, next(counter), neighbor, tentative_g))
+                    child_trace_id = None
+                    if tree_trace is not None and current_trace_id is not None:
+                        child_trace_id = record_tree_state(tree_trace, neighbor, current_trace_id, tentative_g)
+                    heapq.heappush(frontier, (f_score, next(counter), neighbor, tentative_g, child_trace_id))
         else:
             for neighbor in road_map.successors(current):
                 edge_weight = get_edge_cost(road_map, current, neighbor)
@@ -76,7 +82,10 @@ def astar_search(
                     parent_map[neighbor] = current
                     h_val = haversine_distance(neighbor, destino_node, road_map)
                     f_score = tentative_g + h_val
-                    heapq.heappush(frontier, (f_score, next(counter), neighbor, tentative_g))
+                    child_trace_id = None
+                    if tree_trace is not None and current_trace_id is not None:
+                        child_trace_id = record_tree_state(tree_trace, neighbor, current_trace_id, tentative_g)
+                    heapq.heappush(frontier, (f_score, next(counter), neighbor, tentative_g, child_trace_id))
 
     elapsed_time = time.perf_counter() - start_time
 

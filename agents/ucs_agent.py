@@ -7,17 +7,20 @@ import itertools
 import time
 from typing import Any, Dict, List, Tuple
 from core.map_loader import BogotaRoadMap, get_edge_cost
+from core.search_tree import SearchTreeTrace, record_tree_state, start_tree_trace
 
 
 def ucs_search(
     road_map: Any,
     origen_node: Any,
-    destino_node: Any
+    destino_node: Any,
+    tree_trace: SearchTreeTrace = None
 ) -> Tuple[List[Any], float, int, float]:
     """
     Ejecuta el algoritmo de Búsqueda de Costo Uniforme (UCS).
     """
     start_time = time.perf_counter()
+    root_trace_id = start_tree_trace(tree_trace, origen_node)
 
     if origen_node == destino_node:
         elapsed_time = time.perf_counter() - start_time
@@ -28,7 +31,7 @@ def ucs_search(
 
     counter = itertools.count()
     frontier = []
-    heapq.heappush(frontier, (0.0, next(counter), origen_node))
+    heapq.heappush(frontier, (0.0, next(counter), origen_node, root_trace_id))
 
     cost_so_far: Dict[Any, float] = {origen_node: 0.0}
     parent_map: Dict[Any, Any] = {}
@@ -36,7 +39,7 @@ def ucs_search(
     found = False
 
     while frontier:
-        current_cost, _, current = heapq.heappop(frontier)
+        current_cost, _, current, current_trace_id = heapq.heappop(frontier)
         visited_nodes_count += 1
 
         if current == destino_node:
@@ -52,7 +55,10 @@ def ucs_search(
                 if neighbor not in cost_so_far or new_cost < cost_so_far[neighbor]:
                     cost_so_far[neighbor] = new_cost
                     parent_map[neighbor] = current
-                    heapq.heappush(frontier, (new_cost, next(counter), neighbor))
+                    child_trace_id = None
+                    if tree_trace is not None and current_trace_id is not None:
+                        child_trace_id = record_tree_state(tree_trace, neighbor, current_trace_id, new_cost)
+                    heapq.heappush(frontier, (new_cost, next(counter), neighbor, child_trace_id))
         else:
             for neighbor in road_map.successors(current):
                 edge_weight = get_edge_cost(road_map, current, neighbor)
@@ -60,7 +66,10 @@ def ucs_search(
                 if neighbor not in cost_so_far or new_cost < cost_so_far[neighbor]:
                     cost_so_far[neighbor] = new_cost
                     parent_map[neighbor] = current
-                    heapq.heappush(frontier, (new_cost, next(counter), neighbor))
+                    child_trace_id = None
+                    if tree_trace is not None and current_trace_id is not None:
+                        child_trace_id = record_tree_state(tree_trace, neighbor, current_trace_id, new_cost)
+                    heapq.heappush(frontier, (new_cost, next(counter), neighbor, child_trace_id))
 
     elapsed_time = time.perf_counter() - start_time
 
