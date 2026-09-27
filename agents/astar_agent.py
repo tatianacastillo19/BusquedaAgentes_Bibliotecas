@@ -1,6 +1,6 @@
 """
 Agente de Búsqueda A* (A-Star Search).
-Optimizado con función f(n) = g(n) + h(n), coordenadas cacheadas y listas de adyacencia directa.
+Optimizado con función f(n) = g(n) + h(n), coordenadas cacheadas y listas de adyacencia direct
 """
 import heapq
 import itertools
